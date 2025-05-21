@@ -1,7 +1,8 @@
 module relu #(
     parameter int NUM_INPUTS    = 784,
     parameter int FP_TOTAL_BITS = 16,
-    parameter int FP_FRAC_BITS  = 8
+    parameter int FP_FRAC_BITS  = 8,
+	parameter int NUM_CLASSES = 4
 )(
     input  logic clk,
     input  logic reset,

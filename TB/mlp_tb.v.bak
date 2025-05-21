@@ -1,0 +1,150 @@
+`timescale 1ns/1ps
+module mlp_tb;
+
+    /* ----- DUT parameters ------------------------------------- */
+    localparam int NUM_FEATURES   = 4;
+    localparam int NUM_CLASSES    = 3;
+    localparam int FP_TOTAL_BITS  = 16;
+    localparam int FP_FRAC_BITS   = 8;
+
+    /* ----- 100-MHz clock -------------------------------------- */
+    logic clk = 0; always #5 clk = ~clk;
+
+    /* ----- DUT signals ---------------------------------------- */
+    logic reset, start, done;
+    logic signed [FP_TOTAL_BITS-1:0] x           [NUM_FEATURES];
+    logic signed [FP_TOTAL_BITS-1:0] hid_bias    [NUM_FEATURES];
+    logic signed [FP_TOTAL_BITS-1:0] hid_w       [NUM_FEATURES][NUM_FEATURES];
+    logic signed [FP_TOTAL_BITS-1:0] out_bias    [NUM_CLASSES];
+    logic signed [FP_TOTAL_BITS-1:0] out_w       [NUM_FEATURES][NUM_CLASSES];
+    logic signed [FP_TOTAL_BITS-1:0] y           [NUM_CLASSES];
+
+    MLP #(
+        .NUM_FEATURES (NUM_FEATURES),
+        .NUM_CLASSES  (NUM_CLASSES),
+        .FP_TOTAL_BITS(FP_TOTAL_BITS),
+        .FP_FRAC_BITS (FP_FRAC_BITS)
+    ) dut ( .* );
+
+    /* ----- file buffers --------------------------------------- */
+    bit [8*NUM_FEATURES*NUM_FEATURES*2-1:0] raw_whid = '0;
+    bit [8*NUM_FEATURES*2-1:0]             raw_bhid = '0;
+    bit [8*NUM_FEATURES*NUM_CLASSES*2-1:0] raw_wout = '0;
+    bit [8*NUM_CLASSES*2-1:0]              raw_bout = '0;
+    bit [8*NUM_FEATURES*60-1:0]            raw_x    = '0;
+    byte unsigned                          raw_y [0:59];
+
+    logic signed [15:0] w_in_flat  [NUM_FEATURES*NUM_FEATURES-1:0];
+    logic signed [15:0] w_out_flat [NUM_FEATURES*NUM_CLASSES-1:0];
+    logic signed [15:0] b_hid_flat [NUM_FEATURES-1:0];
+    logic signed [15:0] b_out_flat [NUM_CLASSES-1:0];
+    logic signed [15:0] x_flat     [NUM_FEATURES-1:0];
+
+    /* ----- stimulus ------------------------------------------- */
+    initial begin
+        integer fd, nbytes, num_samples;
+        int correct;              // declaration only
+        correct = 0;
+
+        /* === load hidden layer weights === */
+        fd = $fopen("../Weights/w_in_hid.bin","rb");  if(!fd) $fatal;
+        nbytes = $fread(raw_whid, fd); $fclose(fd);
+        for (int i=0;i<NUM_FEATURES*NUM_FEATURES;i++) begin
+            bit [7:0] lo, hi;
+            lo = raw_whid[i*16 +: 8];
+            hi = raw_whid[i*16+8 +: 8];
+            w_in_flat[i] = {hi,lo};
+        end
+
+        /* === load hidden biases === */
+        fd = $fopen("../Weights/b_hid.bin","rb"); if(!fd) $fatal;
+        nbytes = $fread(raw_bhid, fd); $fclose(fd);
+        for (int i=0;i<NUM_FEATURES;i++) begin
+            bit [7:0] lo, hi;
+            lo = raw_bhid[i*16 +: 8];
+            hi = raw_bhid[i*16+8 +: 8];
+            b_hid_flat[i] = {hi,lo};
+        end
+
+        /* === load output weights === */
+        fd = $fopen("../Weights/w_hid_out.bin","rb"); if(!fd) $fatal;
+        nbytes = $fread(raw_wout, fd); $fclose(fd);
+        for (int i=0;i<NUM_FEATURES*NUM_CLASSES;i++) begin
+            bit [7:0] lo, hi;
+            lo = raw_wout[i*16 +: 8];
+            hi = raw_wout[i*16+8 +: 8];
+            w_out_flat[i] = {hi,lo};
+        end
+
+        /* === load output biases === */
+        fd = $fopen("../Weights/b_out.bin","rb"); if(!fd) $fatal;
+        nbytes = $fread(raw_bout, fd); $fclose(fd);
+        for (int i=0;i<NUM_CLASSES;i++) begin
+            bit [7:0] lo, hi;
+            lo = raw_bout[i*16 +: 8];
+            hi = raw_bout[i*16+8 +: 8];
+            b_out_flat[i] = {hi,lo};
+        end
+
+        /* map to DUT arrays */
+        for (int r=0;r<NUM_FEATURES;r++)
+            for (int c=0;c<NUM_FEATURES;c++)
+                hid_w[r][c] = w_in_flat[r*NUM_FEATURES+c];
+        for (int i=0;i<NUM_FEATURES;i++)
+                hid_bias[i] = b_hid_flat[i];
+        for (int r=0;r<NUM_FEATURES;r++)
+            for (int c=0;c<NUM_CLASSES;c++)
+                out_w[r][c] = w_out_flat[r*NUM_CLASSES+c];
+        for (int i=0;i<NUM_CLASSES;i++)
+                out_bias[i] = b_out_flat[i];
+
+        /* === load test vectors === */
+        fd = $fopen("../Weights/x_test.bin","rb"); if(!fd) $fatal;
+        nbytes      = $fread(raw_x, fd); $fclose(fd);
+        num_samples = nbytes / (NUM_FEATURES*2);
+
+        fd = $fopen("../Weights/y_test.bin","rb"); if(!fd) $fatal;
+        void'($fread(raw_y, fd)); $fclose(fd);
+
+        /* one-time reset */
+        reset = 1; start = 0; repeat(2) @(posedge clk);
+        reset = 0;
+
+        /* iterate samples -------------------------------------- */
+        for (int s=0; s<num_samples; s++) begin : SAMPLE
+            /* per-sample reset */
+            reset = 1; @(posedge clk); reset = 0;
+
+            /* load sample */
+            for (int f=0; f<NUM_FEATURES; f++) begin
+                bit [7:0] lo, hi;
+                int idx;
+                idx = (s*NUM_FEATURES + f)*16;
+                lo  = raw_x[idx +: 8];
+                hi  = raw_x[idx+8 +: 8];
+                x_flat[f] = {hi,lo};
+                x[f]      = x_flat[f];
+            end
+
+            /* start pulse */
+            start = 1; @(posedge clk); start = 0;
+            @(posedge done);
+
+            /* arg-max */
+            int pred = 0;
+            
+            for (int c=1;c<NUM_CLASSES;c++)
+                if (y[c] > y[pred]) pred = c;
+
+            $display("sample %0d : pred=%0d  true=%0d", s, pred, raw_y[s]);
+            if (pred == raw_y[s]) correct++;
+
+            @(posedge clk);
+        end
+
+        $display("Accuracy = %0d / %0d = %0.2f%%",
+                 correct, num_samples,
+                 100.0*real'(correct)/num_samples);
+        $finish;
+    end
+endmodule
