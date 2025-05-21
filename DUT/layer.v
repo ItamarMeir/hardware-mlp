@@ -1,10 +1,10 @@
 // layer.v – NUM_CLASSES parallel MACs
 `timescale 1ns/1ps
 module layer #(
-    parameter int NUM_FEATURES   = 784,
-    parameter int NUM_CLASSES    = 4,
-    parameter int FP_TOTAL_BITS  = 16,
-    parameter int FP_FRAC_BITS   = 8
+    parameter int NUM_FEATURES    = 4,
+    parameter int FP_TOTAL_BITS   = 16,
+    parameter int FP_FRAC_BITS    = 8,
+    parameter int NUM_CLASSES     = 3
 )(
     input  logic clk, reset, start,
 
